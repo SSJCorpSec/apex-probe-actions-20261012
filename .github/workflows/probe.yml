@@ -1,0 +1,55 @@
+name: apex-isolation-probe
+on:
+  push:
+  pull_request:
+  pull_request_target:
+# Deliberately request MAX permissions. Platform MUST downgrade this to
+# read-only for pull_request triggered by a fork, regardless of this block.
+permissions: write-all
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: context
+        run: |
+          echo "EVENT=${{ github.event_name }}"
+          echo "ACTOR=${{ github.actor }}"
+          echo "REF=${{ github.ref }}"
+          echo "PR_HEAD_FORK=${{ github.event.pull_request.head.repo.fork }}"
+          echo "PR_HEAD_REPO=${{ github.event.pull_request.head.repo.full_name }}"
+          echo "BASE_REPO=${{ github.repository }}"
+      - uses: actions/checkout@v4
+      - name: restore-cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: cache-marker.txt
+          key: apex-cache-v1-main
+      - name: cache-result
+        run: |
+          echo "CACHE_HIT=${{ steps.cache.outputs.cache-hit }}"
+          echo "--- marker content ---"
+          cat cache-marker.txt 2>/dev/null || echo "NO_MARKER_CACHE_MISS"
+      - name: write-marker
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          echo "BASE-BRANCH-SECRET-MARKER written by EVENT=${{ github.event_name }} REF=${{ github.ref }} at $(date -u)" > cache-marker.txt
+          echo "wrote marker"
+      - name: token-write-test
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== GITHUB_TOKEN write test: create a label (needs write) ==="
+          gh api --include -X POST "repos/${{ github.repository }}/labels" \
+            -f name="apex-probe-$(date +%s)" -f color="ededed" 2>&1 | grep -iE '^HTTP/|message' | head -3 || true
+      - name: secret-exposure-test
+        run: |
+          echo "=== secrets visible to this context? ==="
+          if [ -n "${{ secrets.APEX_PROBE_SECRET }}" ]; then echo "SECRET_PRESENT=yes"; else echo "SECRET_PRESENT=no"; fi
+      - name: upload-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-artifact-${{ github.run_id }}
+          path: cache-marker.txt
+          if-no-files-found: ignore
